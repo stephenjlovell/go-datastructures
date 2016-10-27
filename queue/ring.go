@@ -163,6 +163,39 @@ L:
 	return data, nil
 }
 
+// TryGet will return the next item in the queue. If the queue is empty this will return nil.
+// This call will unblock when an item is added
+// to the queue or Dispose is called on the queue.  An error will be returned
+// if the queue is disposed.
+func (rb *RingBuffer) TryGet() (interface{}, error) {
+	var n *node
+	pos := atomic.LoadUint64(&rb.dequeue)
+L:
+	for {
+		if atomic.LoadUint64(&rb.disposed) == 1 {
+			return nil, ErrDisposed
+		}
+
+		n = rb.nodes[pos&rb.mask]
+		seq := atomic.LoadUint64(&n.position)
+		switch dif := seq - (pos + 1); {
+		case dif == 0:
+			if atomic.CompareAndSwapUint64(&rb.dequeue, pos, pos+1) {
+				break L
+			}
+		case dif < 0:
+			panic(`Ring buffer in compromised state during a get operation.`)
+		default:
+			pos = atomic.LoadUint64(&rb.dequeue)
+		}
+		return nil, nil
+	}
+	data := n.data
+	n.data = nil
+	atomic.StoreUint64(&n.position, pos+rb.mask+1)
+	return data, nil
+}
+
 // Len returns the number of items in the queue.
 func (rb *RingBuffer) Len() uint64 {
 	return atomic.LoadUint64(&rb.queue) - atomic.LoadUint64(&rb.dequeue)
